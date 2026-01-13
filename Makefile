@@ -1,76 +1,148 @@
-# Use bash for shell
-SHELL := /bin/bash
+# Makefile for video_quality_lab
 
-# Path and environment setup
-VENV := .venv
-VIRTUAL_ENV_PATH := $(VENV)/bin
+# OpenMP flags (from scratch_file_1.txt)
+export LDFLAGS := -L/usr/local/opt/libomp/lib
+export CPPFLAGS := -I/usr/local/opt/libomp/include
 
-# Build tools configured in the virtual environment
-PYTHON_INTERPRETER := python3.10
-VENV_PIP := $(VIRTUAL_ENV_PATH)/pip
-VENV_PYTHON := $(VIRTUAL_ENV_PATH)/python
-MESON := $(VIRTUAL_ENV_PATH)/meson
-MESON_SETUP := $(MESON) setup
-NINJA := $(VIRTUAL_ENV_PATH)/ninja
-
-# Build types and options
-BUILDTYPE_RELEASE := --buildtype release
-BUILDTYPE_DEBUG := --buildtype debug
-ENABLE_FLOAT := -Denable_float=true
-ENABLE_NVCC :=	true
-ENABLE_CUDA := -Denable_cuda=true -Denable_nvcc=$(ENABLE_NVCC)
-
-# Directories
+# libvmaf configuration
 LIBVMAF_DIR := libvmaf
-BUILD_DIR := $(LIBVMAF_DIR)/build
-DEBUG_DIR := $(LIBVMAF_DIR)/debug
+LIBVMAF_SOURCE_DIR := $(LIBVMAF_DIR)/libvmaf
+LIBVMAF_BUILD_DIR := $(LIBVMAF_SOURCE_DIR)/build
+LIBVMAF_VMAF_TOOL := $(LIBVMAF_BUILD_DIR)/tools/vmaf
+LIBVMAF_VMAF_LINK := $(LIBVMAF_DIR)/vmaf
+LIBVMAF_PYTHON_DIR := $(LIBVMAF_DIR)/python
+LIBVMAF_URL := https://github.com/Netflix/vmaf.git
 
-.PHONY: default all debug build install cythonize clean distclean cythonize-deps
+.PHONY: all clean help libvmaf libvmaf-clone libvmaf-build libvmaf-clean libvmaf-python libvmaf-python-requirements libvmaf-link libvmaf-test
 
-default: build
+# Default target
+all: libvmaf
 
-all: build debug install test cythonize
+# Show help message
+help:
+	@echo "Available targets:"
+	@echo "  make all            - Build libvmaf (default)"
+	@echo "  make libvmaf        - Clone and build libvmaf"
+	@echo "  make libvmaf-clone  - Clone libvmaf repository"
+	@echo "  make libvmaf-build  - Build libvmaf (requires meson and ninja)"
+	@echo "  make libvmaf-link              - Create symlink: ./libvmaf/vmaf -> build/tools/vmaf"
+	@echo "  make libvmaf-python-requirements - Install VMAF Python requirements"
+	@echo "  make libvmaf-python            - Install VMAF Python package (pip install -e)"
+	@echo "  make libvmaf-test              - Run VMAF Python unit tests"
+	@echo "  make libvmaf-clean             - Clean libvmaf build directory"
+	@echo "  make clean          - Clean all build artifacts"
+	@echo "  make help           - Show this help message"
+	@echo ""
+	@echo "After building, use: ./libvmaf/vmaf (if linked) or ./libvmaf/libvmaf/build/tools/vmaf"
 
-$(BUILD_DIR): $(MESON) $(NINJA)
-	PATH="$(VENV)/bin:$$PATH" $(MESON_SETUP) $(BUILD_DIR) $(LIBVMAF_DIR) $(BUILDTYPE_RELEASE) $(ENABLE_FLOAT) $(ENABLE_CUDA)
+# Build libvmaf (clone if needed, then build)
+libvmaf: $(LIBVMAF_VMAF_TOOL) libvmaf-link
 
-$(DEBUG_DIR): $(MESON) $(NINJA)
-	PATH="$(VENV)/bin:$$PATH" $(MESON_SETUP) $(DEBUG_DIR) $(LIBVMAF_DIR) $(BUILDTYPE_DEBUG) $(ENABLE_FLOAT) $(ENABLE_CUDA)
+# Clone libvmaf if it doesn't exist
+libvmaf-clone:
+	@if [ ! -d "$(LIBVMAF_DIR)" ]; then \
+		echo "Cloning libvmaf..."; \
+		git clone $(LIBVMAF_URL) $(LIBVMAF_DIR); \
+	else \
+		echo "libvmaf directory already exists. Skipping clone."; \
+	fi
 
-cythonize: cythonize-deps
-	pushd python && ../$(VENV_PYTHON) setup.py build_ext --build-lib . && popd || exit 1
+# Build libvmaf using meson
+libvmaf-build: libvmaf-clone
+	@if [ ! -f "$(LIBVMAF_VMAF_TOOL)" ]; then \
+		echo "Building libvmaf with floating-point support..."; \
+		MESON=$$(command -v meson 2>/dev/null || command -v .venv/bin/meson 2>/dev/null || command -v $$(which python3)/../bin/meson 2>/dev/null || echo ""); \
+		NINJA=$$(command -v ninja 2>/dev/null || command -v .venv/bin/ninja 2>/dev/null || echo ""); \
+		if [ -z "$$MESON" ]; then \
+			echo "Error: meson not found. Please install it:"; \
+			echo "  pip install meson"; \
+			echo "  or: brew install meson"; \
+			exit 1; \
+		fi; \
+		if [ -z "$$NINJA" ]; then \
+			echo "Error: ninja not found. Please install it:"; \
+			echo "  pip install ninja"; \
+			echo "  or: brew install ninja"; \
+			exit 1; \
+		fi; \
+		cd $(LIBVMAF_SOURCE_DIR) && \
+		$$MESON setup build --buildtype release -Denable_float=true && \
+		$$NINJA -C build; \
+	else \
+		echo "libvmaf already built."; \
+	fi
 
-build: $(BUILD_DIR) $(NINJA)
-	PATH="$(VENV)/bin:$$PATH" $(NINJA) -vC $(BUILD_DIR)
+# Ensure vmaf tool exists
+$(LIBVMAF_VMAF_TOOL): libvmaf-build
+	@if [ ! -f "$(LIBVMAF_VMAF_TOOL)" ]; then \
+		echo "Error: libvmaf build failed. vmaf tool not found."; \
+		exit 1; \
+	fi
 
-test: build $(NINJA)
-	PATH="$(VENV)/bin:$$PATH" $(NINJA) -vC $(BUILD_DIR) test
+# Create convenience symlink for vmaf tool
+libvmaf-link: $(LIBVMAF_VMAF_TOOL)
+	@if [ ! -L "$(LIBVMAF_VMAF_LINK)" ] && [ ! -f "$(LIBVMAF_VMAF_LINK)" ]; then \
+		echo "Creating symlink: $(LIBVMAF_VMAF_LINK) -> libvmaf/build/tools/vmaf"; \
+		cd $(LIBVMAF_DIR) && ln -s libvmaf/build/tools/vmaf vmaf; \
+	else \
+		echo "Symlink already exists or file exists at $(LIBVMAF_VMAF_LINK)"; \
+	fi
 
-debug: $(DEBUG_DIR) $(NINJA)
-	PATH="$(VENV)/bin:$$PATH" $(NINJA) -vC $(DEBUG_DIR)
+# Install VMAF Python requirements
+# Note: If you get permission errors, fix ownership with:
+#   sudo chown -R $(whoami) .venv/lib/python3.11/site-packages/numpy*
+libvmaf-python-requirements:
+	@if [ -f "$(LIBVMAF_PYTHON_DIR)/requirements.txt" ]; then \
+		echo "Installing VMAF Python requirements..."; \
+		echo "Note: If you encounter permission errors with numpy, you may need to:"; \
+		echo "  1. Fix ownership: sudo chown -R \$$(whoami) .venv/lib/python3.11/site-packages/numpy*"; \
+		echo "  2. Or recreate venv: rm -rf .venv && python3 -m venv .venv"; \
+		pip install -r $(LIBVMAF_PYTHON_DIR)/requirements.txt || \
+		(echo "Installation failed. Try fixing permissions or recreating venv." && exit 1); \
+	else \
+		echo "Error: requirements.txt not found at $(LIBVMAF_PYTHON_DIR)/requirements.txt"; \
+		exit 1; \
+	fi
 
-install: $(BUILD_DIR) $(NINJA)
-	PATH="$(VENV)/bin:$$PATH" $(NINJA) -vC $(BUILD_DIR) install
+# Install VMAF Python package in development mode
+libvmaf-python: libvmaf libvmaf-python-requirements
+	@if [ -d "$(LIBVMAF_PYTHON_DIR)" ]; then \
+		echo "Installing VMAF Python package..."; \
+		cd $(LIBVMAF_PYTHON_DIR) && \
+		pip install -e .; \
+	else \
+		echo "Error: Python directory not found at $(LIBVMAF_PYTHON_DIR)"; \
+		exit 1; \
+	fi
 
-clean:
-	rm -rf $(BUILD_DIR) $(DEBUG_DIR)
-	rm -f python/vmaf/core/adm_dwt2_cy.c*
+# Run VMAF Python unit tests
+libvmaf-test:
+	@if [ -f "$(LIBVMAF_DIR)/unittest" ]; then \
+		echo "Running VMAF Python unit tests..."; \
+		cd $(LIBVMAF_DIR) && ./unittest; \
+	else \
+		echo "Error: unittest script not found at $(LIBVMAF_DIR)/unittest"; \
+		exit 1; \
+	fi
 
-distclean: clean
-	rm -rf $(VENV)
+# Clean libvmaf build directory
+libvmaf-clean:
+	@if [ -d "$(LIBVMAF_BUILD_DIR)" ]; then \
+		echo "Cleaning libvmaf build directory..."; \
+		rm -rf $(LIBVMAF_BUILD_DIR); \
+		echo "libvmaf build directory cleaned."; \
+	else \
+		echo "No libvmaf build directory to clean."; \
+	fi
 
-# Set up or rebuild virtual environment
-$(VENV_PIP):
-	@echo "Setting up the virtual environment..."
-	$(PYTHON_INTERPRETER) -m venv $(VENV) || { echo "Failed to create virtual environment"; exit 1; }
-	$(VENV_PIP) install --upgrade pip || { echo "Failed to upgrade pip"; exit 1; }
-	@echo "Virtual environment setup complete."
-
-$(MESON): $(VENV_PIP)
-	$(VENV_PIP) install meson || { echo "Failed to install meson"; exit 1; }
-
-$(NINJA): $(VENV_PIP)
-	$(VENV_PIP) install ninja || { echo "Failed to install ninja"; exit 1; }
-
-cythonize-deps: $(VENV_PIP)
-	$(VENV_PIP) install setuptools cython numpy || { echo "Failed to install dependencies"; exit 1; }
+# Clean all build artifacts
+clean: libvmaf-clean
+	@echo "Cleaning build artifacts..."
+	@find . -type f -name "*.pyc" -delete
+	@find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	@find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
+	@find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+	@find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
+	@find . -type f -name "*.so" -delete 2>/dev/null || true
+	@find . -type f -name "*.o" -delete 2>/dev/null || true
+	@echo "Clean complete."
